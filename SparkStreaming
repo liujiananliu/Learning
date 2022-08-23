@@ -1,0 +1,4 @@
+# SparkStreaming原理
+* 将数据流离散化为批，之后进行批处理。将流，按照设置的采集间隔，将每个采集周期获取到的数据，封装为一个RDD，之后对这个RDD再进行运算。
+* 特点： 近实时(不是完全的实时)。 处理的单位(批次)。
+* 优点： 在SparkStreaming模块调用Spark的其他API（core,sparksql,mlib,graphx）
