@@ -1,5 +1,38 @@
-# SparkStreaming原理
+# SparkStreaming编程基础
 
-* 将数据流离散化为批，之后进行批处理。将流，按照设置的采集间隔，将每个采集周期获取到的数据，封装为一个RDD，之后对这个RDD再进行运算。
-* 特点： 近实时(不是完全的实时)。 处理的单位(批次)。
-* 优点： 在SparkStreaming模块调用Spark的其他API（core,sparksql,mlib,graphx）
+
+
+## SparkStreaming原理
+
+将数据流离散化为批，之后进行批处理。将流，按照设置的采集间隔，将每个采集周期获取到的数据，封装为一个RDD，之后对这个RDD再进行运算。
+
+* 特点：近实时(不是完全的实时)。 处理的单位(批次)。
+* 在SparkStreaming模块调用Spark的其他API（core,sparksql,mlib,graphx）
+
+## SparkStreaming编程的套路
+
+1. 创建入口StreamingContext
+2. 使用StreamingContext获取DStream(数据流)
+3. 使用DStream的API，进行各种transformation
+4. 将最终的DStream进行输出
+5. 启动App
+6. 阻塞当前App，让它一直运行，直到发命令让它停止
+
+## Exactly Once
+
+### 方式一
+
+**at least once + 幂等性输出(去重) = exactly once**
+
+*==编程套路：==* 
+
+> 1. 取消offsets的自动提交
+> 2. 获取偏移量
+> 3. 幂等输出
+> 4. 在输出后手动提交
+
+### 方式二
+
+**at least once + 将结果和offsets在一个事务中写出 = exactly once**
+
+> *关系型数据库才有事务，Mysql中只有Innodb引擎，才有事务*
