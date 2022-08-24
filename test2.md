@@ -191,7 +191,7 @@ sequenceDiagram
     Bob->>Alice: Hi Alice
 ```
 
- 
+ [tiaozhuan1](#tiaozhuan1)
 
 ```
 sequenceDiagram
@@ -223,7 +223,17 @@ _joijo_
 
 \*jojijeor\* 
 
+[点这里跳转](#tiaozhuan1)
 
+
+
+[id]: www.baodu.com/ "jijief"
+
+[This link](http://example.net/) has no title attribute.
+
+This is [an example][id] reference-style link.
+
+This is [an example](http://example.com/ "Title") inline link.
 
 ~~jojoijwoeri~~ 
 
@@ -242,4 +252,56 @@ $$
 \lim_{x \to \infty} \exp(-x) = 0
 $$
 ==joajwiejr== 
+
+$limit_{x \to \infty} \exp(-x) = 0$
+
+H~2~o, 
+
+X~long\ text~/
+
+H~2~O
+
+x^2^
+
+x^2^  x^joijoijere^ 
+
+<video src="xxx.mp4" />
+
+ 
+
+# qwef
+
+## jiji
+
+### jioajweoi
+
+#### joijoiji
+
+##### jiojioji
+
+###### jojiji
+
+jihiji
+
+jijoiji
+
+`jijier`
+
+<u>jijijowierojo</u>
+
+*jiojoijwoerjoj*
+
+**jiojiojoijwoiejroj**
+
+**jojaoiwjer**
+
+
+
+<a name="tiaozhuan1">tiaozhuan1</a>
+
+[百度](http://www.baidu.com)
+
+[百度](http://www.baidu.com "百度链接")
+
+
 
