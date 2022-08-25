@@ -151,19 +151,6 @@ ds1.foreachRDD(rdd => {
 
 ***参考粒度***
 
-```
-所有的单词是一个K-V：
-       key:  wordcount
-       value:   hash(map)
-
-一个单词一个K-V：
-       key:   wc:单词
-       value:  个数
-
------------------
-只要是获取数据库连接，以分区为单位获取。 一个分区共享一个连接，而不是分区中的每个数据各自用各自的。
-```
-
 1. 所有的单词是一个k-v
    ```
    key: wordcount
@@ -176,13 +163,158 @@ ds1.foreachRDD(rdd => {
    value: 个数
    ```
 
-   
+***只要是获取数据库连接，以分区为单位获取。 一个分区共享一个连接，而不是分区中的每个数据各自用各自的。***
+
+## 9.窗口操作
+
+三个和时间相关的概念:
+
+**batchDuration:** 指没间隔多久采集到的数据作为一个批次(封装为一个RDD)。
+
+**window :** 窗口(当前计算的数据所在的时间范围，当前要计算最近 多长时间的数据)。
+				 窗口的方向只是是当前时间，往过去进行推移，不能包含未来时间。
+
+**slide** ： 滑动步长。指每间隔多久，触发一次计算(提交一个Job)。
+
+举例： 将数据每间隔10s划分为1个批次， 要求每间隔1min ， 去计算过去30秒产生的数据。
+
+```
+batchDuration    ：   10s
+window           ：   30s
+slide            :    1min
+```
+
+数量关系：
+
+1. 一般情况下， slide 和 window是相等的。
+    如果slide > window： 导致漏算(kafka除外)。
+    如果slide < window : 导致重复算。
+
+2. slide 和 window必须是 batchDuration的整倍数！
+
+3. 默认情况下，不指定window,和slide，window和slide都等于batchDuration
+
+## 10.停止App
+
+**粗鲁地关闭:** 直接kill掉程序即可。
+
+**优雅的关闭:** StreamingContext.stop()
+
+​	 关键问题： StreamingContext.stop()写在哪里?
+
+​	 应该单独启动一个线程，这个线程和main线程是相互独立。在分线程中，不断监听是否需要关闭app，如果监听到了，就调用		StreamingContext.stop()。
+
+```scala
+object GracefullyStopAppDemo {
+  def main(args: Array[String]): Unit = {
+    val streamingContext = new StreamingContext("local", "testAppName1",Seconds(5))
+      
+    val kafkaParams = Map[String, Object](
+      "bootstrap.servers" -> "hadoop102:9092",
+      "key.deserializer" -> classOf[StringDeserializer],
+      "value.deserializer" -> classOf[StringDeserializer],
+      "group.id" -> "testGroupId",
+      "auto.offset.reset" -> "latest",
+      "enable.auto.commit" -> "true"
+    )
+      
+    val topics = Array("topicB")
+      
+    val ds = KafkaUtils.createDirectStream[String, String](
+      streamingContext,
+      PreferConsistent,
+      Subscribe[String, String](topics, kafkaParams)
+    )
+      
+    val ds1: DStream[(String, Int)] = ds.flatMap(record => record.value().split(" ")).map(word => (word, 1)).reduceByKey(_ + _)
+    ds1.print(1000)
+    streamingContext.start()
+    val stopAppTread = new StopAppTread("stop", streamingContext)
+    new Thread(stopAppTread).start()
+    streamingContext.awaitTermination()
+  }
+}
+
+class StopAppTread(name: String, context: StreamingContext) extends Runnable {
+  private val jedis = new Jedis("hadoop103", 6379)
+  override def run(): Unit = {
+    if(!jedis.exists(name)){
+      Thread.sleep(5000)
+    }
+    context.stop(true, true)
+  }
+}
+```
+
+
+
+# 二、从kafka中获取和写入offsets
+
+> [Spark Streaming + Kafka Integration Guide](https://spark.apache.org/docs/latest/streaming-kafka-0-10-integration.html)
+
+1. kafka的分区和SparkRDD中的分区是1:1的关系。
+   如果希望从kafka获取的RDD有较大的初始分区数，应该怎么做?
+   增加kafka主题的分区。
+
+2. 提供了访问offsets的功能
+
+   - **Obtaining Offsets**
+
+     ```scala
+     stream.foreachRDD { rdd =>
+       val offsetRanges = rdd.asInstanceOf[HasOffsetRanges].offsetRanges
+       rdd.foreachPartition { iter =>
+         val o: OffsetRange = offsetRanges(TaskContext.get.partitionId)
+         println(s"${o.topic} ${o.partition} ${o.fromOffset} ${o.untilOffset}")
+       }
+     }
+     ```
+
+   - **Storing Offsets**
+
+     ```scala
+     stream.foreachRDD { rdd =>
+       val offsetRanges = rdd.asInstanceOf[HasOffsetRanges].offsetRanges
+     
+       // some time later, after outputs have completed
+       stream.asInstanceOf[CanCommitOffsets].commitAsync(offsetRanges)
+     }
+     ```
+
+     ```
+     注1：
+     OffsetRange： 代表主题中一个分区的offset信息
+     所消费的主题有几个分区，就会有几个OffsetRange，把这些OffsetRange封装为集合  Array[OffsetRange]
+     
+     注2：
+     HasOffsetRanges 只有一个子类:  KafkaRDD
+     只有当rdd是 KafkaRDD 类型时，此行代码才不会报错！
+     结论： 只有初始DS，其中封装的RDD才是kafkaRDD
+     ```
+
+3. 提交offsets到kafka
+
+   1. 自动提交
+
+      在消费者的参数上设置    "enable.auto.commit" -> "true"
+
+   2. 手动提交
+
+      ```
+      1.取消自动提交 "enable.auto.commit" -> "false"
+      2.获取到当前批次的偏移量，尤其关注 offsetRange中的utilOffset'
+      3.调用API，把每个分区消费到的utilOffset提交到kafka集群的_comsumer_offsets中
+      ```
 
 
 
 
 
-# 二、Exactly Once 消费
+
+
+
+
+# 三、Exactly Once 消费
 
 ## 支持输出幂等性的数据库
 
@@ -278,17 +410,160 @@ ds1.foreachRDD(rdd => {
 ==编程套路：== 
 
 > 1. 程序启动前，要从关系型数据库读取 上次提交的 offsets
+>    案例中写了一个readHistoryOffsetsFromMysql方法
 > 2. 基于上次提交的offsets获取一个，从提交位置向后消费的 DStream
 > 3. 获取当前批次数据的offsets
 > 4. 进行业务的计算
 > 5. 将分布式计算的结果收集到Driver端，和offsets在一个事务中写出
+>    案例中写了一个writeDataAndOffsetsInATransction方法
 
 ```scala
+object TransactionExactlyOnce {
+  val groupId = "testGroupId"
+  val topic = "topicB"
+
+  def readHistoryOffsetsFromMysql(groupId: String, topic: String): mutable.Map[TopicPartition, Long] = {
+    val offsets = new mutable.HashMap[TopicPartition, Long]()
+    var connection: Connection = null
+    var ps: PreparedStatement = null
+
+    //②准备sql，使用Connection预编译sql，获取PreparedStatement
+    val sql: String =
+      """
+        |select
+        |   partitionId,untilOffset
+        |from offsets
+        |where groupId = ? and topic = ?
+        |""".stripMargin
+
+    try {
+      //①准备Connection
+      connection = JDBCUtil.getConnection()
+      ps = connection.prepareStatement(sql)
+      ps.setString(1, groupId)
+      ps.setString(2, topic)
+      val resultSet: ResultSet = ps.executeQuery()
+      while (resultSet.next()) {
+        offsets.put(new TopicPartition(topic, resultSet.getInt("partitionId")),
+          resultSet.getLong("untilOffset"))
+      }
+    } catch {
+      case e: Exception => e.printStackTrace()
+    } finally {
+      if (ps != null) ps.close()
+      if (connection != null) connection.close()
+    }
+    offsets
+  }
+  
+  def writeDataAndOffsetsInTransaction(data: Array[(String, Int)], offsetRanges: Array[OffsetRange]) = {
+    var connection: Connection = null
+    var ps1: PreparedStatement = null
+    var ps2: PreparedStatement = null
+    val sql1: String =
+      """
+        |INSERT INTO `wordcount` VALUES(?,?)
+        |ON DUPLICATE KEY UPDATE COUNT = COUNT + VALUES(COUNT)
+        |""".stripMargin
+    val sql2: String =
+      """
+        |REPLACE INTO `offsets` VALUES(?,?,?,?)
+        |""".stripMargin
+
+    try {
+
+      //①获取Connection
+      connection = JDBCUtil.getConnection()
+
+      //体现事务：取消事务的自动提交
+      connection.setAutoCommit(false)
+
+      //②准备sql，使用connection预编译sql，获取PreparedStatement
+      ps1 = connection.prepareStatement(sql1)
+      ps2 = connection.prepareStatement(sql2)
+
+      //③向占位符中添加参数
+      for ((word, count) <- data) {
+        ps1.setString(1, word)
+        ps1.setInt(2, count)
+        ps1.addBatch()
+      }
+      for (offsetRange <- offsetRanges) {
+        ps2.setString(1, groupId)
+        ps2.setString(2, topic)
+        ps2.setInt(3, offsetRange.partition)
+        ps2.setLong(4, offsetRange.untilOffset)
+        ps2.addBatch()
+      }
+
+      //④执行sql
+      val writeDataSuccess: Array[Int] = ps1.executeBatch()
+      val writeOffsetsSuccess: Array[Int] = ps2.executeBatch()
+
+      //体现事务，提交事务
+      connection.commit()
+
+      //⑤输出返回值
+      println("数据成功写入了：" + writeDataSuccess.size)
+      println("offsets成功写入了：" + writeOffsetsSuccess.size)
+
+    } catch {
+      case e: Exception =>
+        //体现事务，回滚
+        connection.rollback()
+        e.printStackTrace()
+    } finally {
+      if (ps1 != null) ps1.close()
+      if (ps2 != null) ps2.close()
+      if (connection != null) connection.close()
+    }
+  }
+
+  def main(args: Array[String]): Unit = {
+    //①程序启动前，要从关系型数据库读取上次提交的offsets
+    val offsets: mutable.Map[TopicPartition, Long] = readHistoryOffsetsFromMysql(groupId: String, topic: String)
+    val streamingContext = new StreamingContext("local[*]", "testAppName1", Seconds(5))
+
+    val kafkaParams = Map[String, Object](
+      "bootstrap.servers" -> "hadoop102:9092",
+      "key.deserializer" -> classOf[StringDeserializer],
+      "value.deserializer" -> classOf[StringDeserializer],
+      "group.id" -> groupId,
+      "auto.offset.reset" -> "latest",
+      "enable.auto.commit" -> "false"
+    )
+
+    //②基于上次提交的offsets获取一个，从提交位置向后消费的DStream
+    val topics = Array(topic)
+    val ds = KafkaUtils.createDirectStream[String, String](
+      streamingContext,
+      PreferConsistent,
+      Subscribe[String, String](topics, kafkaParams, offsets)
+    )
+    ds.foreachRDD(rdd => {
+      if (!rdd.isEmpty()) { //③获取当前批次数据的offsets
+        val offsetRanges = rdd.asInstanceOf[HasOffsetRanges].offsetRanges
+
+        //④进行业务的计算
+        val rdd1: RDD[(String, Int)] = rdd.flatMap(record => record.value().split(" ")).map(word => (word, 1)).reduceByKey(_ + _)
+
+        //⑤将分布式计算的结果收集到Driver端，和offsets在一个事务中写出
+        val data: Array[(String, Int)] = rdd1.collect()
+        writeDataAndOffsetsInTransaction(data, offsetRanges)
+        //同时把offsets也提交到kafka.没用，下次读取从mysql读
+        ds.asInstanceOf[CanCommitOffsets].commitAsync(offsetRanges)
+      }
+    })
+
+    streamingContext.start()
+    streamingContext.awaitTermination()
+  }
+}
 ```
 
 
 
-# 三、Spark Streaming example
+# 四、Spark Streaming example
 
 ```scala
 /*
